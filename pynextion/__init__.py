@@ -1,260 +1,161 @@
+# -*- coding: utf-8 -*-
+
+# noinspection PyPackageRequirements
 import serial
-import sys
 import time
-from threading import Thread
-from pages import Page
-from components import Text, Number, Button, Gauge
+
+from queue import Queue
+
+from .exceptions import UnexpectedMessageCode
+from .message import Message
+
 
 class Nextion(object):
+    RED = 63488
+    BLUE = 31
+    GRAY = 33840
+    BLACK = 0
+    WHITE = 65535
+    GREEN = 2016
+    BROWN = 48192
+    YELLOW = 65504
 
-  ERRORS={
-    "00": "Invalid instruction",
-    "01": "Successful execution of instruction",
-    "03": "Page ID invalid",
-    "04": "Picture ID invalid",
-    "05": "Font ID invalid",
-    "11": "Baud rate setting invalid",
-    "12": "Curve control ID number or channel number is invalid",
-    "1a": "Variable name invalid",
-    "1b": "Variable operation invalid"
-  }
+    _ser = debug = BUFFER_SIZE = None
+    _message_buffer = []
 
-  MESSAGES={
-    "65": "Touch event return data",
-    "66": "Current page ID number returns"
-  }
+    def __init__(self, port, debug=False, baud_rate=9600, buffer_size=10):
+        self._ser = serial.Serial(port=port,
+                                  baudrate=baud_rate,
+                                  xonxoff=True,
+                                  exclusive=True,
+                                  timeout=0)  # non_blocking mode
+        self.debug = debug
+        self.BUFFER_SIZE = Queue(buffer_size)
+        self.set_variable('bkcmd', 3)
 
-  RED   =63488	
-  BLUE  =31	
-  GRAY  =33840	
-  BLACK =0	
-  WHITE =65535	
-  GREEN =2016	
-  BROWN =48192
-  YELLOW=65504
+    def set_brightness(self, name):
+        self.set_variable('dim', name)
 
-  def __init__(self,ser,pageDefinitions=None):
-    self.pages = []
-    self.debug = False
-    self.ser = ser
-    while True:
-      try:
-        self.setBkCmd(3)
-        break
-      except:
-        print "Wait..."
-        time.sleep(1)
+    def set_page(self, name):
+        msg = self._nx_write('page ' + str(name))
+        msg.raise_for_status()
 
-    if pageDefinitions is not None:
-      for pageDefinition in pageDefinitions:
-          self.pages.append(Page.newPageByDefinition(self,pageDefinition))
+    def get_current_page(self):
+        msg = self._nx_write('sendme')
+        return msg.parse()
 
+    def refresh(self, elem):
+        msg = self._nx_write('ref %s' % elem)
+        msg.raise_for_status()
 
-  def pageByName(self,name):
-    result=None
-    for page in self.pages:
-      if page.name == name:
-        result=page
-        break
-    return result
+    def get_attr(self, elem, attr):
+        msg = self._nx_write('get %s.%s' % (elem, attr))
+        return msg.parse()
 
-  def hookPage(self,id):
-    page=Page(self,id)
-    self.pages.append(page)
-    return page
+    def set_attr(self, elem, attr, value):
+        msg = self._nx_write('%s.%s=%s' % (elem, attr, value))
+        msg.raise_for_status()
 
-  def setDebug(self,debug):
-    self.debug=debug
+    def clear_screen(self, color):
+        msg = self._nx_write('cls %s' % color)
+        msg.raise_for_status()
 
-  def setBkCmd(self,value):
-    self.set('bkcmd',value)
+    def draw_picture(self, x, y, pic_id, width=None, height=None):
+        if not width or not height:
+            msg = self._nx_write('pic %s,%s,%s' % (x, y, pic_id))
+        else:
+            msg = self._nx_write('picq %s,%s,%s,%s,%s' % (x, y, pic_id, width, height))
+        msg.raise_for_status()
 
-  def setDim(self,value):
-    self.set('dim',value)
+    def draw_string(self, x1, y1, x2, y2, font_id, font_color, background_color,
+                    x_center, y_center, sta, string):
+        msg = self._nx_write('xstr %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' % (
+            x1, y1, x2 - x1, y2 - y1, font_id, font_color, background_color, x_center, y_center, sta, string))
+        msg.raise_for_status()
 
-  def setDim(self,value):
-    self.set('dims',value)
+    def draw_line(self, x1, y1, x2, y2, color):
+        msg = self._nx_write('line %s,%s,%s,%s,%s' % (x1, y1, x2, y2, color))
+        msg.raise_for_status()
 
-  def setPage(self,value):
-    s=self.nxWrite('page '+str(value))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0])+": page "+str(value))
+    def draw_rectangle(self, x1, y1, x2, y2, color):
+        msg = self._nx_write('draw %s,%s,%s,%s,%s' % (x1, y1, x2, y2, color))
+        msg.raise_for_status()
 
-  def getPage(self):
-    self.ser.flushOutput()
-    s=self.nxWrite('sendme')
-    if s[0]==0x66:
-        if s[1]==0xff: s[1]=0x00
-        return s[1]
+    def draw_box(self, x1, y1, x2, y2, color):
+        msg = self._nx_write('fill %s,%s,%s,%s,%s' % (x1, y1, x2 - x1, y2 - y1, color))
+        msg.raise_for_status()
 
-    raise ValueError(Nextion.getErrorMessage(0x00))
+    def draw_circle(self, x, y, r, color, fill=False):
+        if not fill:
+            msg = self._nx_write('cir %s,%s,%s,%s' % (x, y, r, color))
+        else:
+            msg = self._nx_write('cirs %s,%s,%s,%s' % (x, y, r, color))
+        msg.raise_for_status()
 
-###############################
+    def set_variable(self, key, value):
+        msg = self._nx_write(key + '=' + str(value))
+        msg.raise_for_status()
 
-  def refresh(self,id="0"):
-    s=self.nxWrite('ref %s' % id)
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+    def _nx_write(self, cmd):
+        if self.debug:
+            print('Bytes waiting in output buffer: %s' % self._ser.out_waiting)
+        self._ser.write(chr(255) * 3 + cmd + chr(255) * 3)
+        msg = self._nx_read_message()
+        return msg
 
-  def getText(self,id):
-    s=self.nxWrite('get %s.txt' % id)
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+    def _nx_read_message(self=None, timeout=5):
+        data = []
+        status_code = None
+        data_end_count = 0
+        start_time = time.time()
 
-  def getValue(self,id):
-    s=self.nxWrite('get %s.val' % id)
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+        if self.debug:
+            print('Bytes waiting in input buffer: %s' % self._ser.in_waiting)
 
-###############################
+        while True:
+            if timeout != -1 and time.time() - start_time > timeout:
+                raise serial.SerialTimeoutException
 
-  def setValue(self,id,value):
-    print id+'.val="'+str(value)+'"'
-    s=self.nxWrite(id+'.val='+str(value))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0])+": id: "+id+" value:"+ value)
+            if not self._ser.in_waiting:
+                continue
 
-  def setText(self,id,value):
-    s=self.nxWrite(id+'.txt="'+str(value)+'"')
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0])+": id: "+id+" text:"+ value)
+            try:
+                ascii_char = self._ser.read()
+            except serial.SerialException as ex:
+                print(str(ex))
+                continue
 
-  def clear(self,color):
-    s=self.nxWrite('cls %s' % color);
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+            if ascii_char is None or ascii_char == "":
+                continue
 
-  def drawPicture(self,x,y,pic,w=None,h=None):
-    if w is None or h is None:
-      s=self.nxWrite('pic %s,%s,%s' % (x,y,pic))
-    else:
-      s=self.nxWrite('picq %s,%s,%s,%s,%s,%s' %(x,y,pic,w,h))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+            if ascii_char == '\xff' and not status_code and len(data) == 0:
+                continue
 
-  def drawString(self,x1,y1,x2,y2,fontid,fontcolor,backcolor,xcenter,ycenter,sta,string):
-    s=self.nxWrite('xstr %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' % (x1,y1,x2-x1,y2-y1,fontid,fontcolor,backcolor,xcenter,ycenter,sta,string))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+            if not status_code:
+                # первый байт, который не \xff - это код сообщения
+                status_code = ord(ascii_char)
+                continue
 
-  def drawLine(self,x1,y1,x2,y2,color):
-    s=self.nxWrite('line %s,%s,%s,%s,%s' % (x1,y1,x2,y2,color))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+            if ascii_char == '\xff':
+                data_end_count = data_end_count + 1
+                if data_end_count == 3:
+                    break
+            else:
+                data_end_count = 0
+                data.append(ascii_char)
+                if self.debug is True:
+                    print(''.join(data))
 
-  def drawRectangle(self,x1,y1,x2,y2,color):
-    s=self.nxWrite('draw %s,%s,%s,%s,%s' % (x1,y1,x2,y2,color))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+        return Message(status_code, data)
 
-  def drawBox(self,x1,y1,x2,y2,color):
-    s=self.nxWrite('fill %s,%s,%s,%s,%s' % (x1,y1,x2-x1,y2-y1,color))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+    def _read(self):
+        try:
+            while True:
+                print(self._nx_read_message(timeout=-1).parse())
+        except KeyboardInterrupt:
+            pass
 
-  def drawCircle(self,x,y,r,color):
-    s=self.nxWrite('cir %s,%s,%s,%s' % (x,y,r,color))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0]))
+    def add_message_listener(self, callback):
+        # TODO
+        pass
 
-##############################
-  def set(self,key,value):
-    s=self.nxWrite(key+'='+str(value))
-    if s[0]!=0x01:
-      raise ValueError(Nextion.getErrorMessage(s[0])+": "+key+"="+str(value))
-    
-
-  @staticmethod
-  def getErrorMessage(s):
-     return Nextion.ERRORS[format(s, '02x')]
-
-  def nxWrite(self,s):
-    self.ser.write(s)
-    self.ser.write(chr(255))
-    self.ser.write(chr(255))
-    self.ser.write(chr(255))
-    return self.nxRead()
-
-  def nxRead(self,cmax=0,timeout=0):
-    s=[]
-    done=False
-    def _reader():
-      count=0
-      time_now = time.clock()
-      while timeout==0 or (time.clock()-time_now)<timeout:
-        r = self.ser.read()
-        if r is None or r=="":
-          continue
-
-        c = ord(r)
-        if c==0xff and len(s)==0:
-          continue
-
-        if c!=0x00:        
-          if self.debug is True:
-            print "\/ :"+str(c)+":"+str(len(s))+":"+str(count)
-
-          s.append(c)
-          if len(s)==cmax:
-            return
-          if c==0xff:
-            count=count+1
-            if count==3:
-              if self.debug is True:
-                print "!!"
-              return
-          else:
-            count=0
-          if self.debug is True:
-            print "/\ :"+str(c)+":"+str(len(s))+":"+str(count)
-      print "Timeout"
-
-    t = Thread(target=_reader)
-    t.start()
-    t.join()
-    return s 
-
-if __name__ == "__main__":
-  #ser=serial.Serial('/dev/ttyMCC',9600,timeout=0)
-  ser=serial.Serial('/dev/tty.SLAB_USBtoUART',9600,timeout=0)
-  ser.flushOutput()
-  nextion=Nextion(ser)
-  print 'Serial connected'
-  #nextion.setDim(50)
-  #for p in range(0,3):
-  #  nextion.setPage(p)
-  #  nextion.setText('t0',"Fede<3")
-  #  print nextion.getPage()
-  #nextion.setDim(100)
-
-  pageBoatSpeed=nextion.hookPage(0)
-  pageHeading=nextion.hookPage(1)
-  pageWindSpeed=nextion.hookPage(2)
-
-  txtBoatSpeedValue=pageBoatSpeed.hookText("t1")
-  txtBoatSpeedAttr=pageBoatSpeed.hookText("t2")
-  txtBoatSpeedUnit=pageBoatSpeed.hookText("t3")
-
-  txtHeadingValue=pageBoatSpeed.hookText("t1")
-  txtHeadingTrueMag=pageBoatSpeed.hookText("t3")
-
-  txtWindSpeedValue=pageWindSpeed.hookText("t1")
-  txtWindSpeedTrueApp=pageWindSpeed.hookText("t2")
-  txtWindSpeedUnit=pageWindSpeed.hookText("t3")
-
-  pageBoatSpeed.show()
-  txtBoatSpeedValue.set(2.2)
-  pageHeading.show()
-  txtHeadingValue.set(300)
-  pageWindSpeed.show()
-  txtWindSpeedValue.set(3.75)
-
-  nextion.clear(Nextion.RED)
-  nextion.drawBox(0,0,100,100,Nextion.BLUE)
-  nextion.drawRectangle(0,0,100,100,Nextion.YELLOW)
-  nextion.drawLine(0,0,100,100,Nextion.GREEN)
-  nextion.drawCircle(100,100,50,Nextion.BROWN)
-  #nextion.drawString(0,0,400,200,2,4096,3072,1,1,1,"*")
-
-  pageBoatSpeed.show()
-  txtBoatSpeedValue.set("Fede<3")
