@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import struct
+import binascii
 
 from .exceptions import *
 
@@ -27,6 +28,9 @@ class Message(object):
         self.status_code = status_code
         self.data = data
         self.parsed_data = None
+
+    def __str__(self):
+        return 'Status: %s, data: %s' % (self.status_code, binascii.hexlify(self.data))
 
     def raise_for_status(self):
         if self.status_code in EXCEPTION_CODES:
@@ -57,12 +61,12 @@ class Message(object):
                                 'action': 'press' if self.data[4] == '\x01' else 'release'}
 
         elif self.status_code == 0x70:
-            return ''.join(self.data)
+            return self.data
 
         elif self.status_code == 0x71:
-            self.parsed_data = struct.unpack("<h", ''.join(self.data))
+            self.parsed_data = struct.unpack("<h", self.data)
 
         else:
-            raise MessageParseException('Unknown message code: %s', self.status_code)
+            raise UnexpectedMessageCode('Unknown message code: %s', self.status_code)
 
         return self.parsed_data

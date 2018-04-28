@@ -2,9 +2,10 @@
 
 # noinspection PyPackageRequirements
 import serial
+import binascii
 import time
 
-from queue import Queue
+import threading
 
 from .exceptions import UnexpectedMessageCode
 from .message import Message
@@ -20,18 +21,24 @@ class Nextion(object):
     BROWN = 48192
     YELLOW = 65504
 
-    _ser = debug = BUFFER_SIZE = None
-    _message_buffer = []
+    _ser = debug = None
+    _keep_listening = True
+    _message_listener = None
+    _last_message = None
 
-    def __init__(self, port, debug=False, baud_rate=9600, buffer_size=10):
+    def __init__(self, port, debug=False, baud_rate=9600):
         self._ser = serial.Serial(port=port,
                                   baudrate=baud_rate,
                                   xonxoff=True,
                                   exclusive=True,
                                   timeout=0)  # non_blocking mode
         self.debug = debug
-        self.BUFFER_SIZE = Queue(buffer_size)
+        self._message_listener = threading.Thread(target=self._nx_read_messages)
+        self._message_listener.start()
         self.set_variable('bkcmd', 3)
+
+    def close(self):
+        self._keep_listening = False
 
     def set_brightness(self, name):
         self.set_variable('dim', name)
@@ -100,62 +107,53 @@ class Nextion(object):
         if self.debug:
             print('Bytes waiting in output buffer: %s' % self._ser.out_waiting)
         self._ser.write(chr(255) * 3 + cmd + chr(255) * 3)
-        msg = self._nx_read_message()
+        # FIXME
+        time.sleep(1)
+        msg = self._last_message
         return msg
 
-    def _nx_read_message(self=None, timeout=5):
-        data = []
-        status_code = None
-        data_end_count = 0
+    def _nx_read_messages(self, timeout=-1):
+        buf = ''
         start_time = time.time()
 
-        if self.debug:
-            print('Bytes waiting in input buffer: %s' % self._ser.in_waiting)
-
-        while True:
-            if timeout != -1 and time.time() - start_time > timeout:
-                raise serial.SerialTimeoutException
-
-            if not self._ser.in_waiting:
-                continue
-
-            try:
-                ascii_char = self._ser.read()
-            except serial.SerialException as ex:
-                print(str(ex))
-                continue
-
-            if ascii_char is None or ascii_char == "":
-                continue
-
-            if ascii_char == '\xff' and not status_code and len(data) == 0:
-                continue
-
-            if not status_code:
-                # первый байт, который не \xff - это код сообщения
-                status_code = ord(ascii_char)
-                continue
-
-            if ascii_char == '\xff':
-                data_end_count = data_end_count + 1
-                if data_end_count == 3:
-                    break
-            else:
-                data_end_count = 0
-                data.append(ascii_char)
-                if self.debug is True:
-                    print(''.join(data))
-
-        return Message(status_code, data)
-
-    def _read(self):
+        # nextion chunk size is 8 byte
         try:
-            while True:
-                print(self._nx_read_message(timeout=-1).parse())
+            while self._keep_listening:
+                if timeout != -1 and time.time() - start_time > timeout:
+                    raise serial.SerialTimeoutException
+
+                if not self._ser.in_waiting:
+                    continue
+
+                if self.debug:
+                    print('Bytes waiting in input buffer: %s' % self._ser.in_waiting)
+
+                # between 'in_waiting' and 'read' data loss can happened if CPU is busy
+                try:
+                    ascii_message = self._ser.read(self._ser.in_waiting)
+                except serial.SerialException as ex:
+                    print('Exception: %s' % str(ex))
+                    continue
+
+                if self.debug:
+                    print('Plain ASCII message: %s' % binascii.hexlify(ascii_message))
+
+                buf += ascii_message
+                end_message_index = buf.find('\xff' * 3)
+                while end_message_index != -1:
+                    # got end of message
+                    status_code = ord(buf[0])
+                    message_data = buf[1:end_message_index]
+                    buf = buf[end_message_index + 3:]
+                    self._last_message = Message(status_code, message_data)
+                    if self.debug:
+                        print('New message received: %s' % self._last_message)
+                    # trying to find one more message
+                    end_message_index = buf.find('\xff' * 3)
+
         except KeyboardInterrupt:
             pass
 
     def add_message_listener(self, callback):
         # TODO
         pass
-
