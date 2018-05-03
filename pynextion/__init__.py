@@ -2,6 +2,7 @@
 
 # noinspection PyPackageRequirements
 import serial
+import time
 import binascii
 import threading
 
@@ -22,11 +23,12 @@ class Nextion(object):
     BROWN = 48192
     YELLOW = 65504
 
-    keep_listening = True
+    _keep_reading = True
+    _message_reader = None
 
     message_listeners = {}
 
-    def __init__(self, port, debug=False, baud_rate=9600, timeout=5, serving_threads=5):
+    def __init__(self, port, debug=False, baud_rate=9600, keep_reading=True, timeout=5, serving_threads=5):
         self._ser = serial.Serial(port=port,
                                   baudrate=baud_rate,
                                   xonxoff=True,
@@ -34,14 +36,29 @@ class Nextion(object):
                                   timeout=0)  # non_blocking mode
         self.debug = debug
         self.timeout = timeout
-        self._message_listener = threading.Thread(target=self._nx_read_messages)
-        self._message_listener.start()
-
+        self.keep_reading = keep_reading
         self._callback_executor = ThreadPoolExecutor(serving_threads)
+
         self.set_variable('bkcmd', 3)
 
+    @property
+    def keep_reading(self):
+        return self._keep_reading
+
+    @keep_reading.setter
+    def keep_reading(self, value):
+        if value:
+            if not self._message_reader or not self._message_reader.is_alive():
+                self._message_reader = threading.Thread(target=self._nx_read_messages)
+                self._keep_reading = True
+                self._message_reader.start()
+        else:
+            self._keep_reading = False
+            self._message_reader.join()
+
     def close(self):
-        self.keep_listening = False
+        self._keep_reading = False
+        self._message_reader.join()
         self._callback_executor.shutdown()
 
     def set_brightness(self, name):
@@ -120,8 +137,9 @@ class Nextion(object):
         buf = ''
 
         # nextion chunk size is 8 byte
-        while self.keep_listening:
+        while self._keep_reading:
             if not self._ser.in_waiting:
+                time.sleep(0.1)
                 continue
 
             if self.debug:

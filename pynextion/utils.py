@@ -2,12 +2,16 @@
 
 import threading
 
-from .exceptions import MessageTimeout
+from .exceptions import MessageTimeout, OperationIsNotPermitted
 
 
 def wait_for_result(status_codes):
     def decorator(func):
         def func_wrapper(*args, **kwargs):
+            self = args[0]
+            if not self._message_reader.is_alive():
+                raise OperationIsNotPermitted('Calling to this method require active listener')
+
             got_result = threading.Event()
 
             # noinspection PyUnusedLocal
@@ -16,7 +20,6 @@ def wait_for_result(status_codes):
                 got_result.set()
                 nextion.remove_message_listener(callback, status_codes)
 
-            self = args[0]
             self.add_message_listener(callback,
                                       status_codes=status_codes)
             func(*args, **kwargs)

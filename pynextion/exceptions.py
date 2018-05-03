@@ -13,6 +13,10 @@ class MessageTimeout(NextionException):
     pass
 
 
+class OperationIsNotPermitted(NextionException):
+    pass
+
+
 class UnexpectedMessageCode(NextionException):
     pass
 
