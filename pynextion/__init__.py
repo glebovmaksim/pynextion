@@ -2,11 +2,10 @@
 
 # noinspection PyPackageRequirements
 import serial
-import time
 import binascii
 import threading
 
-from collections import deque, namedtuple
+from concurrent.futures import ThreadPoolExecutor
 
 from .exceptions import UnexpectedMessageCode
 from .message import Message
@@ -23,27 +22,27 @@ class Nextion(object):
     BROWN = 48192
     YELLOW = 65504
 
-    keep_listening = keep_serving = True
-    listeners = {}
+    keep_listening = True
 
-    def __init__(self, port, debug=False, baud_rate=9600, buffer_length=100):
+    message_listeners = {}
+
+    def __init__(self, port, debug=False, baud_rate=9600, timeout=5, serving_threads=5):
         self._ser = serial.Serial(port=port,
                                   baudrate=baud_rate,
                                   xonxoff=True,
                                   exclusive=True,
                                   timeout=0)  # non_blocking mode
         self.debug = debug
-        self.message_buffer = deque(maxlen=buffer_length)
+        self.timeout = timeout
         self._message_listener = threading.Thread(target=self._nx_read_messages)
         self._message_listener.start()
-        self._slave = threading.Thread(target=self._serve_listeners)
-        self._slave.start()
 
+        self._callback_executor = ThreadPoolExecutor(serving_threads)
         self.set_variable('bkcmd', 3)
 
     def close(self):
         self.keep_listening = False
-        self.keep_serving = False
+        self._callback_executor.shutdown()
 
     def set_brightness(self, name):
         self.set_variable('dim', name)
@@ -117,15 +116,11 @@ class Nextion(object):
             print('Bytes waiting in output buffer: %s' % self._ser.out_waiting)
         self._ser.write(chr(255) * 3 + cmd + chr(255) * 3)
 
-    def _nx_read_messages(self, timeout=-1):
+    def _nx_read_messages(self):
         buf = ''
-        start_time = time.time()
 
         # nextion chunk size is 8 byte
         while self.keep_listening:
-            if timeout != -1 and time.time() - start_time > timeout:
-                raise serial.SerialTimeoutException
-
             if not self._ser.in_waiting:
                 continue
 
@@ -145,37 +140,31 @@ class Nextion(object):
             buf += ascii_message
             end_message_index = buf.find('\xff' * 3)
             while end_message_index != -1:
-                # got end of message
+                # got end of the message
                 status_code = ord(buf[0])
                 message_data = buf[1:end_message_index]
                 buf = buf[end_message_index + 3:]
                 msg = Message(status_code, message_data)
                 if self.debug:
                     print('New message received: %s' % msg)
-                self.message_buffer.appendleft(msg)
+                self._notify_listener(msg)
                 # trying to find one more message
                 end_message_index = buf.find('\xff' * 3)
 
-    def _serve_listeners(self):
-        while self.keep_serving:
-            try:
-                msg = self.message_buffer.pop()
-            except IndexError:
-                time.sleep(0.1)
-            else:
+    def _notify_listener(self, msg):
+            if self.debug:
+                print(self.message_listeners)
+            listeners = []
+            if msg.status_code in self.message_listeners:
+                listeners = self.message_listeners[msg.status_code]
+            if 255 in self.message_listeners:
+                listeners.extend(self.message_listeners[255])
+            for listener in listeners:
                 if self.debug:
-                    print(self.listeners)
-                listeners = []
-                if msg.status_code in self.listeners:
-                    listeners = self.listeners[msg.status_code]
-                if 255 in self.listeners:
-                    listeners.extend(self.listeners[255])
-                for listener in listeners:
-                    listener.callback(self, msg)
-                    if not listener.is_permanent:
-                        listeners.remove(listener)
+                    print('Submit message %s to callback %s' % (msg, listener))
+                self._callback_executor.submit(listener, self, msg)
 
-    def add_message_listener(self, callback, status_codes=(255,), is_permanent=True):
+    def add_message_listener(self, listener, status_codes=(255,)):
         """
         If status_code is not 255 then only messages with
         that particular code will be send to callback.
@@ -186,8 +175,16 @@ class Nextion(object):
         If permanent = True, then subscription remains until
         remove_message_listener is not called.
         """
-        Listener = namedtuple('Listener', 'callback is_permanent')
         for status_code in status_codes:
-            callbacks = self.listeners.setdefault(status_code, [])
-            if callback not in callbacks:
-                callbacks.append(Listener(callback, is_permanent))
+            listeners = self.message_listeners.setdefault(status_code, [])
+            if listener not in listeners:
+                listeners.append(listener)
+
+    def remove_message_listener(self, listener, status_codes):
+        for status_code in status_codes:
+            if status_code in self.message_listeners:
+                listeners = self.message_listeners[status_code]
+                if listener in listeners:
+                    listeners.remove(listener)
+                    if not listeners:
+                        self.message_listeners.pop(status_code)

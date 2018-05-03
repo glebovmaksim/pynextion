@@ -9,6 +9,10 @@ class MessageParseException(NextionException):
     pass
 
 
+class MessageTimeout(NextionException):
+    pass
+
+
 class UnexpectedMessageCode(NextionException):
     pass
 
