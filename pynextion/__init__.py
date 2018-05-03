@@ -187,11 +187,6 @@ class Nextion(object):
         If status_code is not 255 then only messages with
         that particular code will be send to callback.
         Status code with 255 code means subscription to all messages.
-
-        If permanent = False, then only first message will be send
-        to callback, after that subscription will be removed.
-        If permanent = True, then subscription remains until
-        remove_message_listener is not called.
         """
         for status_code in status_codes:
             listeners = self.message_listeners.setdefault(status_code, [])

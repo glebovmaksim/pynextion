@@ -12,20 +12,20 @@ def wait_for_result(status_codes):
             if not self._message_reader.is_alive():
                 raise OperationIsNotPermitted('Calling to this method require active listener')
 
-            got_result = threading.Event()
+            result = threading.Event()
 
             # noinspection PyUnusedLocal
             def callback(nextion, msg):
-                got_result.result = msg.parse()
-                got_result.set()
                 nextion.remove_message_listener(callback, status_codes)
+                result.parsed_data = msg.parse()
+                result.set()
 
             self.add_message_listener(callback,
                                       status_codes=status_codes)
             func(*args, **kwargs)
-            got_result.wait(timeout=self.timeout)
-            if not hasattr(got_result, 'result'):
+            result.wait(timeout=self.timeout)
+            if not hasattr(result, 'parsed_data'):
                 raise MessageTimeout
-            return got_result.result
+            return result.parsed_data
         return func_wrapper
     return decorator
