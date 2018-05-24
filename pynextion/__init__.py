@@ -74,7 +74,7 @@ class Nextion(object):
         self._nx_write('tsw %s, %s' % (elem, is_touchable))
 
     @wait_for_result((0x66, ))
-    def get_current_page(self):
+    def get_current_page_id(self):
         self._nx_write('sendme')
 
     def refresh(self, elem):
