@@ -25,7 +25,7 @@ def wait_for_result(status_codes):
             func(*args, **kwargs)
             result.wait(timeout=self.timeout)
             if not hasattr(result, 'parsed_data'):
-                raise MessageTimeout
+                raise MessageTimeout('No response, check logs for errors')
             return result.parsed_data
         return func_wrapper
     return decorator

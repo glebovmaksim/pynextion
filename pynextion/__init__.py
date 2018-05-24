@@ -85,7 +85,7 @@ class Nextion(object):
         self._nx_write('get %s.%s' % (elem, attr))
 
     def set_attr(self, elem, attr, value):
-        self._nx_write('%s.%s=%s' % (elem, attr, value))
+        self._nx_write('%s.%s="%s"' % (elem, attr, value))
 
     def set_variable(self, key, value):
         self._nx_write(key + '=' + str(value))
